@@ -1,0 +1,89 @@
+---
+- name: Setze Cloudflare Security DNS + (optional) DoH auf Windows 10
+  hosts: win10            # Host-Gruppe aus deinem Inventory (kannst du anpassen)
+  gather_facts: yes       # Facts einsammeln, falls du später OS-Version o.ä. brauchst
+
+  vars:
+    # Name des Netzwerkadapters, auf dem die DNS-Server gesetzt werden sollen.
+    # Unter Windows 10 heißt der Standard-LAN-Adapter meist "Ethernet".
+    # Prüfen kannst du den Namen z.B. mit: Get-NetAdapter in PowerShell.
+    dns_interface_alias: "Ethernet"
+
+    # IPv4 DNS-Server wie im Screenshot:
+    # Bevorzugter DNS: 1.1.1.2
+    # Alternativer DNS: 1.0.0.2
+    dns_ipv4_primary: "1.1.1.2"
+    dns_ipv4_secondary: "1.0.0.2"
+
+    # IPv6 DNS-Server wie im Screenshot:
+    # DNS bevorzugt: 2606:4700:4700::1112
+    # Alternativer DNS: 2606:4700:4700::1002
+    dns_ipv6_primary: "2606:4700:4700::1112"
+    dns_ipv6_secondary: "2606:4700:4700::1002"
+
+    # DoH-Vorlage (Template) wie im Screenshot:
+    # https://security.cloudflare-dns.com/dns-query
+    doh_template: "https://security.cloudflare-dns.com/dns-query"
+
+  tasks:
+
+    - name: IPv4/IPv6 DNS-Server auf dem gewünschten Adapter setzen
+      ansible.windows.win_dns_client:
+        # Adapter, auf dem wir die DNS-Server überschreiben.
+        # Wichtig: Nur DNS wird geändert, die IP-Konfiguration (DHCP/Static)
+        # bleibt unangetastet.
+        adapter_names:
+          - "{{ dns_interface_alias }}"
+
+        # IPv4 DNS-Adressen (Reihenfolge = Bevorzugt, Alternativ)
+        ipv4_addresses:
+          - "{{ dns_ipv4_primary }}"
+          - "{{ dns_ipv4_secondary }}"
+
+        # IPv6 DNS-Adressen (Reihenfolge = Bevorzugt, Alternativ)
+        ipv6_addresses:
+          - "{{ dns_ipv6_primary }}"
+          - "{{ dns_ipv6_secondary }}"
+
+      # Ergebnis: In Windows steht dann „DNS-Serverzuweisung: Manuell“
+      # und die Adresse(n) erscheinen – genau wie in deinem Screenshot.
+
+    - name: DoH-Templates für die Cloudflare-DNS-Server eintragen (falls unterstützt)
+      ansible.windows.win_shell: |
+        # Dieser Block nutzt "netsh dnsclient add encryption", um für jeden
+        # DNS-Server die DoH-Vorlage zu registrieren.
+        #
+        # Parameter:
+        #   server      = IP des DNS-Servers (IPv4/IPv6)
+        #   dohtemplate = URL zu /dns-query (Cloudflare Security)
+        #   autoupgrade = yes  -> Windows versucht automatisch, DNS über HTTPS zu nutzen
+        #   udpfallback = no   -> kein Fallback auf unverschlüsseltes UDP
+        #
+        # WICHTIG:
+        # - Funktioniert nur auf Windows 10 Builds mit DoH-Unterstützung
+        #   (Insider / neuere Builds) und auf Windows 11.
+        # - Auf älteren Win10-Versionen existiert der Befehl noch nicht und
+        #   schlägt mit "Befehl nicht gefunden" fehl -> ist dank ignore_errors ok.
+
+        netsh dnsclient add encryption server={{ dns_ipv4_primary }} dohtemplate={{ doh_template }} autoupgrade=yes udpfallback=no
+        netsh dnsclient add encryption server={{ dns_ipv4_secondary }} dohtemplate={{ doh_template }} autoupgrade=yes udpfallback=no
+        netsh dnsclient add encryption server={{ dns_ipv6_primary }} dohtemplate={{ doh_template }} autoupgrade=yes udpfallback=no
+        netsh dnsclient add encryption server={{ dns_ipv6_secondary }} dohtemplate={{ doh_template }} autoupgrade=yes udpfallback=no
+      ignore_errors: yes
+      # ignore_errors:
+      #   - Wenn dein Win10 das Kommando noch nicht kennt, bricht der Task
+      #     nicht das ganze Play ab.
+      #   - In dem Fall hast du immer noch korrekt gesetzte DNS-Server,
+      #     aber ohne native DoH-Unterstützung des OS.
+
+    - name: Global DoH-Einstellungen setzen (kein Fallback auf Klartext) – optional
+      ansible.windows.win_shell: |
+        # Dieser Schritt schaltet DoH global ein.
+        # doh=yes    -> DNS-over-HTTPS ist erlaubt
+        # (Weitere Optionen wie dot=... oder ddr=... lassen wir auf Default.)
+        #
+        # Auch das funktioniert nur, wenn dein Windows-Build diese Option kennt.
+        netsh dnsclient add global doh=yes
+      ignore_errors: yes
+      # Wieder: ignore_errors, damit ältere Builds ohne DoH das Play nicht abbrechen.
+
